@@ -55,11 +55,14 @@ def test_inference(
     generated_tokens = []
     
     # 최소 토큰 수 설정
-    min_tokens = 20
-
+    min_tokens = 10
+    
+    # 반복 감지를 위한 변수
+    last_tokens = []
+    repetition_threshold = 5  # 이 개수만큼 같은 토큰이 반복되면 중단
+    
     for i in range(max_tokens_to_generate):
         # Get the model outputs
-        # TODO: remove the labels
         outputs = model(
             input_ids=input_ids,
             pixel_values=pixel_values,
@@ -89,10 +92,20 @@ def test_inference(
             token_str = processor.tokenizer.convert_ids_to_tokens(next_token.item())
             print(f"Generated token {i}: {next_token.item()} -> '{token_str}'")
         
+        # 반복 감지
+        last_tokens.append(next_token.item())
+        if len(last_tokens) > repetition_threshold:
+            last_tokens.pop(0)
+            # 모든 토큰이 같은지 확인
+            if all(t == last_tokens[0] for t in last_tokens) and len(last_tokens) >= repetition_threshold:
+                print(f"Repetition detected! Stopping generation at position {i}")
+                break
+        
         # Stop if the stop token has been generated
-        if next_token.item() == stop_token and len(generated_tokens) >= min_tokens:
-            print(f"Stop token generated at position {i} after reaching minimum token count")
+        if next_token.item() == stop_token:
+            print(f"Stop token generated at position {i}")
             break
+            
         # Append the next token to the input
         input_ids = next_token.unsqueeze(-1)
         attention_mask = torch.cat(

@@ -2,9 +2,9 @@
 
 MODEL_PATH="paligemma-weights/paligemma-3b-pt-224"
 PROMPT="What objects are present? Where are they located? What are they doing? What is their appearance? What is the setting or background?"
-IMAGE_FILE_PATH="test_images/sample4.jpg"
-MAX_TOKENS_TO_GENERATE=300
-TEMPERATURE=0.6
+IMAGE_FILE_PATH="test_images/sample2.jpg"
+MAX_TOKENS_TO_GENERATE=100
+TEMPERATURE=0.8
 TOP_P=0.9
 DO_SAMPLE="True"
 ONLY_CPU="False"
