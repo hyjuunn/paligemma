@@ -1,6 +1,7 @@
 from PIL import Image
 import torch
 import fire
+import os
 
 from processing_paligemma import PaliGemmaProcessor
 from modeling_gemma import KVCache, PaliGemmaForConditionalGeneration
@@ -144,6 +145,104 @@ def _sample_top_p(probs: torch.Tensor, p: float):
     return next_token
 
 
+def load_saved_model(model_path: str, device: str):
+    print(f"Loading saved model from {model_path}...")
+    # 먼저 CPU에 로드
+    checkpoint = torch.load(model_path, map_location='cpu')
+    
+    # 모델 초기화 (CPU에서)
+    model = PaliGemmaForConditionalGeneration(checkpoint['config'])
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # 메모리 정리
+    del checkpoint['model_state_dict']
+    torch.cuda.empty_cache()
+    
+    # GPU로 이동 (필요한 경우)
+    if device != 'cpu':
+        print("Moving model to GPU...")
+        model = model.to(device)
+    
+    model = model.eval()
+    return model, checkpoint['tokenizer']
+
+
+def process_all_images(
+    model: PaliGemmaForConditionalGeneration,
+    processor: PaliGemmaProcessor,
+    device: str,
+    prompt: str,
+    images_dir: str,
+    max_tokens_to_generate: int,
+    temperature: float,
+    top_p: float,
+    do_sample: bool,
+):
+    # 이미지 파일 목록 가져오기
+    image_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    image_files.sort()  # 파일 이름 순으로 정렬
+    
+    print("\n=== Processing all images in directory ===\n")
+    
+    for idx, image_file in enumerate(image_files, 1):
+        image_path = os.path.join(images_dir, image_file)
+        print(f"\n{idx}. Processing {image_file}")
+        print("-" * 50)
+        
+        with torch.no_grad():
+            model_inputs = get_model_inputs(processor, prompt, image_path, device)
+            input_ids = model_inputs["input_ids"]
+            attention_mask = model_inputs["attention_mask"]
+            pixel_values = model_inputs["pixel_values"]
+            
+            kv_cache = KVCache()
+            stop_token = processor.tokenizer.eos_token_id
+            generated_tokens = []
+            min_tokens = 10
+            last_tokens = []
+            repetition_threshold = 5
+            
+            for i in range(max_tokens_to_generate):
+                outputs = model(
+                    input_ids=input_ids,
+                    pixel_values=pixel_values,
+                    attention_mask=attention_mask,
+                    kv_cache=kv_cache,
+                )
+                kv_cache = outputs["kv_cache"]
+                next_token_logits = outputs["logits"][:, -1, :]
+                
+                if len(generated_tokens) < min_tokens:
+                    next_token_logits[0, stop_token] = -float('inf')
+                    
+                if do_sample:
+                    next_token_logits = torch.softmax(next_token_logits / temperature, dim=-1)
+                    next_token = _sample_top_p(next_token_logits, top_p)
+                else:
+                    next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                    
+                next_token = next_token.squeeze(0)
+                generated_tokens.append(next_token)
+                
+                last_tokens.append(next_token.item())
+                if len(last_tokens) > repetition_threshold:
+                    last_tokens.pop(0)
+                    if all(t == last_tokens[0] for t in last_tokens) and len(last_tokens) >= repetition_threshold:
+                        break
+                
+                if next_token.item() == stop_token:
+                    break
+                    
+                input_ids = next_token.unsqueeze(-1)
+                attention_mask = torch.cat(
+                    [attention_mask, torch.ones((1, 1), device=input_ids.device)], dim=-1
+                )
+
+            generated_tokens = torch.cat(generated_tokens, dim=-1)
+            decoded = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            print(f"Description: {decoded}\n")
+
+
 def main(
     model_path: str = None,
     prompt: str = None,
@@ -153,6 +252,8 @@ def main(
     top_p: float = 0.9,
     do_sample: bool = False,
     only_cpu: bool = False,
+    use_saved_model: bool = True,
+    process_all: bool = False,  # 모든 이미지 처리 여부
 ):
     device = "cpu"
 
@@ -165,8 +266,11 @@ def main(
     print("Device in use: ", device)
 
     print(f"Loading model")
-    model, tokenizer = load_hf_model(model_path, device)
-    model = model.to(device).eval()
+    if use_saved_model and model_path.endswith('.pt'):
+        model, tokenizer = load_saved_model(model_path, device)
+    else:
+        model, tokenizer = load_hf_model(model_path, device)
+        model = model.to(device).eval()
 
     num_image_tokens = model.config.vision_config.num_image_tokens
     image_size = model.config.vision_config.image_size
@@ -174,17 +278,31 @@ def main(
 
     print("Running inference")
     with torch.no_grad():
-        test_inference(
-            model,
-            processor,
-            device,
-            prompt,
-            image_file_path,
-            max_tokens_to_generate,
-            temperature,
-            top_p,
-            do_sample,
-        )
+        if process_all:
+            # image_file_path를 디렉토리로 처리
+            process_all_images(
+                model,
+                processor,
+                device,
+                prompt,
+                image_file_path,  # 이 경우 디렉토리 경로로 사용
+                max_tokens_to_generate,
+                temperature,
+                top_p,
+                do_sample,
+            )
+        else:
+            test_inference(
+                model,
+                processor,
+                device,
+                prompt,
+                image_file_path,
+                max_tokens_to_generate,
+                temperature,
+                top_p,
+                do_sample,
+            )
 
 
 if __name__ == "__main__":

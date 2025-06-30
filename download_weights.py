@@ -2,8 +2,8 @@ from huggingface_hub import snapshot_download
 import os
 
 def main():
-    # Create weights directory if it doesn't exist
-    weights_dir = os.path.expanduser("~/Projects/Paligemma/paligemma-weights")
+    # Create weights directory in current project directory
+    weights_dir = os.path.join(os.getcwd(), "weights")
     os.makedirs(weights_dir, exist_ok=True)
     
     # Download the model
