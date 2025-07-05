@@ -3,7 +3,7 @@ import os
 
 def main():
     # Create weights directory in current project directory
-    weights_dir = os.path.join(os.getcwd(), "weights")
+    weights_dir = os.path.join(os.getcwd(), "paligemma-weights")
     os.makedirs(weights_dir, exist_ok=True)
     
     # Download the model

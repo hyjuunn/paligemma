@@ -4,7 +4,7 @@ from utils import load_hf_model
 
 def main():
     print("Loading model from HuggingFace weights...")
-    model_path = "weights/paligemma-3b-pt-224"
+    model_path = "paligemma-weights/paligemma-3b-pt-224"
     
     # GPU 사용 가능하면 GPU로
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -15,7 +15,7 @@ def main():
     model = model.to(device).eval()
     
     # 모델 상태 저장
-    save_path = "weights/paligemma_model.pt"
+    save_path = "paligemma-weights/paligemma_model2.pt"
     print(f"Saving model to {save_path}...")
     
     # 모델 상태 딕셔너리와 설정 저장

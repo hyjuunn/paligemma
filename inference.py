@@ -55,14 +55,28 @@ def test_inference(
     stop_token = processor.tokenizer.eos_token_id
     generated_tokens = []
     
-    # 최소 토큰 수 설정
-    min_tokens = 10
+    # 최소/최대 토큰 수 설정
+    min_tokens = 5
+    max_tokens = min(max_tokens_to_generate, 100)  # 최대 100토큰으로 제한
     
     # 반복 감지를 위한 변수
     last_tokens = []
-    repetition_threshold = 5  # 이 개수만큼 같은 토큰이 반복되면 중단
+    repetition_threshold = 3  # 이 개수만큼 같은 토큰이 반복되면 중단
     
-    for i in range(max_tokens_to_generate):
+    # 문장 종료 토큰 목록
+    sentence_end_tokens = [
+        processor.tokenizer.encode('.')[0],
+        processor.tokenizer.encode('!')[0],
+        processor.tokenizer.encode('?')[0],
+        stop_token
+    ]
+    
+    # 콤마 카운터 (너무 많은 콤마는 중단)
+    comma_token = processor.tokenizer.encode(',')[0]
+    comma_count = 0
+    max_commas = 5
+    
+    for i in range(max_tokens):
         # Get the model outputs
         outputs = model(
             input_ids=input_ids,
@@ -73,9 +87,11 @@ def test_inference(
         kv_cache = outputs["kv_cache"]
         next_token_logits = outputs["logits"][:, -1, :]
         
-        # EOS 토큰 확률 낮추기 (최소 토큰 수에 도달하기 전)
+        # EOS 토큰 확률 조정
         if len(generated_tokens) < min_tokens:
-            next_token_logits[0, stop_token] = -float('inf')
+            next_token_logits[0, stop_token] = -float('inf')  # 최소 토큰 수 전에는 EOS 불가
+        elif len(generated_tokens) > max_tokens // 2:
+            next_token_logits[0, stop_token] *= 1.2  # 중반 이후에는 EOS 확률 증가
             
         # Sample the next token
         if do_sample:
@@ -84,27 +100,40 @@ def test_inference(
             next_token = _sample_top_p(next_token_logits, top_p)
         else:
             next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-        assert next_token.size() == (1, 1)
+            
         next_token = next_token.squeeze(0)  # Remove batch dimension
+        token_id = next_token.item()
         generated_tokens.append(next_token)
         
         # 디버깅: 생성된 토큰 출력
-        if i < 5 or i > max_tokens_to_generate - 5:
-            token_str = processor.tokenizer.convert_ids_to_tokens(next_token.item())
-            print(f"Generated token {i}: {next_token.item()} -> '{token_str}'")
+        token_str = processor.tokenizer.convert_ids_to_tokens(token_id)
+        print(f"Generated token {i}: {token_id} -> '{token_str}'")
         
-        # 반복 감지
-        last_tokens.append(next_token.item())
+        # 종료 조건 체크
+        
+        # 1. 반복 감지
+        last_tokens.append(token_id)
         if len(last_tokens) > repetition_threshold:
             last_tokens.pop(0)
-            # 모든 토큰이 같은지 확인
-            if all(t == last_tokens[0] for t in last_tokens) and len(last_tokens) >= repetition_threshold:
+            if all(t == last_tokens[0] for t in last_tokens):
                 print(f"Repetition detected! Stopping generation at position {i}")
                 break
         
-        # Stop if the stop token has been generated
-        if next_token.item() == stop_token:
-            print(f"Stop token generated at position {i}")
+        # 2. 콤마 개수 체크
+        if token_id == comma_token:
+            comma_count += 1
+            if comma_count >= max_commas:
+                print(f"Too many commas ({comma_count})! Stopping generation.")
+                break
+        
+        # 3. 문장 종료 토큰 체크 (최소 토큰 수 이후)
+        if len(generated_tokens) >= min_tokens and token_id in sentence_end_tokens:
+            print(f"Sentence end token generated at position {i}")
+            break
+        
+        # 4. 최대 토큰 수 도달
+        if i >= max_tokens - 1:
+            print(f"Maximum tokens ({max_tokens}) reached!")
             break
             
         # Append the next token to the input
@@ -117,13 +146,15 @@ def test_inference(
     # Decode the generated tokens
     decoded = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-    print("Prompt: ", prompt)
+    print("\nPrompt: ", prompt)
     print("Model output: ", decoded)
     print(f"Generated {len(generated_tokens)} tokens")
     
     # 디버깅: 생성된 모든 토큰 확인
     all_tokens = processor.tokenizer.convert_ids_to_tokens(generated_tokens)
     print(f"All generated tokens: {all_tokens}")
+    
+    return decoded
 
 
 def _sample_top_p(probs: torch.Tensor, p: float):
@@ -148,7 +179,7 @@ def _sample_top_p(probs: torch.Tensor, p: float):
 def load_saved_model(model_path: str, device: str):
     print(f"Loading saved model from {model_path}...")
     # 먼저 CPU에 로드
-    checkpoint = torch.load(model_path, map_location='cpu')
+    checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
     
     # 모델 초기화 (CPU에서)
     model = PaliGemmaForConditionalGeneration(checkpoint['config'])
@@ -160,7 +191,7 @@ def load_saved_model(model_path: str, device: str):
     
     # GPU로 이동 (필요한 경우)
     if device != 'cpu':
-        print("Moving model to GPU...")
+        print("Moving model to GPU/MPS...")
         model = model.to(device)
     
     model = model.eval()
